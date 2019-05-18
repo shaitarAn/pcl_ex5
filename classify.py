@@ -13,83 +13,54 @@ class LyricsClassifier:
             train_data: A dict mapping labels to iterables of lines of
                         (e.g. a file object).
         """
+        test_data = train_data
+        self.train_data = train_data
+        self.test_data = {}
         self.label_counts = {}
         self.label_feature_value_counts = {}
-        self.line_count = 0
-        # store the different seen values for each feature (across the entire
-        # training set, independent of label), needed for smoothing
-        feature_values = defaultdict(lambda: set())
+        self.total_line_count = 0
+        self.feature_values = defaultdict(lambda: set())
+        self.feature_posterior_probabilities = defaultdict(lambda:defaultdict(float))
 
-        for label, lines in train_data.items():
+        for label, lines in self.train_data.items():
             # calculate raw counts given this label
             label_count = 0
             feature_value_counts = defaultdict(lambda: defaultdict(int))
+            list_of_lines = []
             for line in lines:
-                self.line_count += 1
-                # we look at every line and count how many bobos and mikes
+                list_of_lines.append(line.strip())
+                self.total_line_count += 1
                 label_count += 1
                 # for every line we check if feature is present, count
                 features = self._extract_features(line)
                 for feature_id, value in features.items():
-                    # print(feature_id, value)
-                    # feature_id is name of feature
-                    # value is True or False; number of what we count
-                    # for particular label we count features and count them
-                    # we enter info into dict
                     feature_value_counts[feature_id][value] += 1
-                    # for every feature regardless of label update its set of values
-                    feature_values[feature_id].add(value)
-
+                    self.feature_values[feature_id].add(value)
+            self.test_data[label] = list_of_lines
 
             self.label_counts[label] = label_count
             # a dict: for every label we get feature and its counts
             self.label_feature_value_counts[label] = feature_value_counts
 
-        print()
-        print('feature_values.items()')
-        for feature, counts in feature_values.items():
-            print(feature, counts)
-
-        print()
-        print('self.label_feature_value_counts.items()')
-        for label, features in self.label_feature_value_counts.items():
-            print()
-            print(label)
-            for f, v in sorted(features.items(), key = lambda v:v[0]):
-                print(f, v)
-        print()
-        for label, count in self.label_counts.items():
-            print("A-priori probability of class {} is {}".format(str(label), self._apriori_probability(count)))
-
-        print("total lines:", self.line_count)
-
-        #TODO calculate probabilities
         # apriori probability per class in logarithmic space
         self.pBOBO = self._apriori_probability(self.label_counts['bobo'])
         self.pMIKE = self._apriori_probability(self.label_counts['mike'])
 
-        # raw counts of feature 'grunts' in bobo
-        print('GRUNTS in bobo = {0:.2f}'.format( self.label_feature_value_counts['bobo']['grunts'][True]))
+        # posterior probability of a feature, given a label
+        for label, features in self.label_feature_value_counts.items():
+            for f, v in features.items():
+                self.feature_posterior_probabilities[label][f] = self._aposteriori_probability(label, f)
 
-        # posterior (conditional) probability for 'grunts' in 'bobo'
-        # as logarithm
-        # P(Grunts|bobo)
-        GruntsIFbobo = self._aposteriori_probability('grunts', 'bobo')
-
-        # probability of 'bobo' given 'grunts' in non-logarithmic space
-        prob = exp(self.pBOBO)*exp(GruntsIFbobo)
-        # probability of 'bobo' given 'grunts' in logarithmic space
-        p = self.pBOBO+GruntsIFbobo
-        print('probabilityGRUNTS|bobo = {0:.2f}'.format(prob))
-
+        self.evaluate(self.test_data)
 
     def _apriori_probability(self, N):
-        return float("{0:.2f}".format(log(N/self.line_count)))
+        # number of lines with label devided by total number of lines
+        return log(N/self.total_line_count)
 
-
-    def _aposteriori_probability(self, f, l):
-        return log(self.label_feature_value_counts[l][f][True]/self.label_counts[l])
-
+    def _aposteriori_probability(self, l, f):
+        # number of feature occurrences in label + 1 for smoothing devided by
+        # number of lines with label + number of feature values for smoothing
+        return log((self.label_feature_value_counts[l][f][True]+1)/(self.label_counts[l]+len(self.feature_values[f])))
 
     @staticmethod
     def _extract_features(line: str) -> Dict:
@@ -101,13 +72,23 @@ class LyricsClassifier:
         Returns:
             A dict mapping feature IDs to feature values.
         """
-        #TODO find better features
         return {
-            'pray':    'pray' in line,
-            'grunts': any(grunt in line for grunt in ['oh', 'ah', 'uh']),
-            'tokens':  len(line.split()) < 6,
-            'areyouready': 'are you ready' in line,
-            'know': 'know' in line,
+            'pray':'pray' in line, # nobody
+            'grunts': any(grunt in line for grunt in ['oh', 'ah', 'uh']), # bobo
+            'tokens':  len(line.split()) < 6, # bobo
+            'long_lines': len(line.split()) > 15,
+            'areyouready': 'ready' in line, # bobo
+            'know': 'know' in line, # mike
+            # 'bobo': 'bobo' in line, # bobo
+            '!': '!' in line,
+            '?': '?' in line,
+            'parenths': any(grunt in line for grunt in ['(',')']),
+            # 'chihuaha': "chihuaha" in line,
+            'nums': any(num in line for num in ['1', '2', '3', '4', '5', '6', '7', '8', '9']),
+            'pronouns': any(pron in line for pron in ['i', 'me', 'we', 'you']),
+            # 'colors': any(pron in line for pron in ['black', 'white']),
+            # 'vocab': len(set(line.split()))/len(line.split()) < 0.20,
+
         }
 
     def _probability(self, label: str, features: Dict) -> float:
@@ -120,8 +101,16 @@ class LyricsClassifier:
         Returns:
             The non-logarithmic probability of `label` given `features`.
         """
-        #TODO implement
-        raise NotImplementedError()
+        # probability of 'label' given 'features' in non-log space
+        # apriori probability of label + sum of posterior probabilities
+        N = self.label_counts[label]
+        post_probs = []
+        for f, v in features.items():
+            if v == True:
+                post_probs.append(self.feature_posterior_probabilities[label][f])
+        p = self._apriori_probability(N)+sum(post_probs)
+        prob = exp(p)
+        return prob
 
     def predict_label(self, line: str) -> str:
         """Return the most probable prediction by the model.
@@ -132,15 +121,50 @@ class LyricsClassifier:
         Returns:
             The most probable label according to Naïve Bayes.
         """
-        #TODO implement
-        raise NotImplementedError()
+        pass
+        f_dict = self._extract_features(line)
+        b = self._probability('bobo', f_dict)
+        m = self._probability('mike', f_dict)
+        if b > m:
+            return 'bobo'
+        else:
+            return 'mike'
 
     def evaluate(self, test_data: Dict[str, Iterable[str]]):
-        """Evaluate the model and print recall, precision, accuracy and f1-score.
+        """
+        Evaluate the model and print recall, precision, accuracy and f1-score.
 
         Args:
             test_data: A dict mapping labels to iterables of lines
                        (e.g. a file object).
         """
-        #TODO implement
-        raise NotImplementedError()
+        true_labels = []
+        predictions = []
+        for labels, lines in test_data.items():
+            for line in lines:
+                true_labels.append(labels)
+                predictions.append(self.predict_label(line))
+
+        zipped = zip(true_labels, predictions)
+        tp = 0
+        fp = 0
+        for i in zipped:
+            if i[1] != i[0]:
+                fp += 1
+            else:
+                tp += 1
+
+        accuracy = tp / len(true_labels)
+        fn = 0
+        prec, recall, f1 = self.calculate_eval_metrics(tp, fp, fn)
+        print("Precision = {0:.2f}%; recall = {1:.2f}%; micro-average F1 = {2:.2f}%; accuracy = {3:.2f}% ".format(prec, recall*100, f1, accuracy))
+
+
+    def calculate_eval_metrics(self, tp, fp, fn):
+        prec = tp /(tp+fp)
+        recall = tp / (tp+fn)
+        try:
+            f1 = 2*prec*recall / (prec+recall)
+        except ZeroDivisionError:
+            f1 = 0
+        return prec, recall, f1
